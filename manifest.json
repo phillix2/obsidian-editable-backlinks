@@ -1,0 +1,9 @@
+{
+  "id": "editable-backlinks",
+  "name": "Editable Backlinks",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Shows backlinks at the bottom of each note with expanded content and inline editing, similar to Logseq.",
+  "author": "SummaFX",
+  "isDesktopOnly": false
+}

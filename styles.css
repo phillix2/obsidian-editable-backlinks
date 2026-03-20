@@ -1,0 +1,136 @@
+/* Remove Obsidian's min-height/padding so backlinks appear right after content */
+.cm-sizer {
+  min-height: auto !important;
+  padding-bottom: 0 !important;
+}
+
+.cm-content {
+  padding-bottom: 0 !important;
+}
+
+.cm-scroller {
+  min-height: auto !important;
+}
+
+.markdown-preview-sizer {
+  min-height: auto !important;
+  padding-bottom: 0 !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-sizer {
+  min-height: auto !important;
+  padding-bottom: 0 !important;
+}
+
+/* ===== Editable Backlinks ===== */
+
+.editable-backlinks-section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  width: 100%;
+}
+
+/* Header */
+.eb-header {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eb-collapse-all {
+  cursor: pointer;
+  color: var(--text-faint);
+  font-size: 0.9em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+
+.eb-collapse-all:hover {
+  color: var(--text-muted);
+  background: var(--background-modifier-hover);
+}
+
+.eb-title {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.eb-count {
+  color: var(--text-faint);
+  font-size: 0.95em;
+}
+
+/* File group */
+.eb-group {
+  margin-bottom: 8px;
+}
+
+.eb-file-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.eb-file-header:hover .eb-file-name {
+  text-decoration: underline;
+}
+
+.eb-arrow {
+  color: var(--text-faint);
+  font-size: 0.8em;
+  width: 12px;
+}
+
+.eb-file-name {
+  font-weight: 600;
+  color: var(--text-accent);
+  font-size: 0.95em;
+}
+
+/* Blocks */
+.eb-blocks {
+  margin-left: 16px;
+}
+
+.eb-block {
+  padding: 6px 10px;
+  margin: 2px 0;
+  border-left: 2px solid var(--background-modifier-border);
+  cursor: text;
+  position: relative;
+}
+
+.eb-block:hover {
+  border-left-color: var(--text-accent);
+}
+
+/* Rendered content */
+.eb-rendered {
+  line-height: 1.6;
+}
+
+.eb-rendered p {
+  margin: 0;
+}
+
+/* Hide copy buttons that MarkdownRenderer adds */
+.eb-rendered .copy-code-button,
+.eb-rendered button.copy {
+  display: none !important;
+}
+
+/* Contenteditable editing - no visual change */
+[data-eb-editing] {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  caret-color: var(--text-normal);
+}
