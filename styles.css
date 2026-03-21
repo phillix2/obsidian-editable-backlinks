@@ -107,7 +107,8 @@
   position: relative;
 }
 
-.eb-block:hover {
+.eb-block:hover,
+.eb-block:focus-within {
   border-left-color: var(--text-accent);
 }
 
@@ -126,11 +127,27 @@
   display: none !important;
 }
 
-/* Contenteditable editing - no visual change */
-[data-eb-editing] {
-  outline: none !important;
-  border: none !important;
-  box-shadow: none !important;
+/* Prevent Task Enhancer CSS from adding duplicate labels inside backlinks */
+.editable-backlinks-section li.task-list-item > *:last-child::before {
+  content: none !important;
+}
+
+/* Textarea editing mode */
+.eb-textarea {
+  font-family: var(--font-text) !important;
+  color: var(--text-normal) !important;
   background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  resize: none !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+  white-space: pre-wrap !important;
+  word-wrap: break-word !important;
+  tab-size: 2 !important;
+  line-height: 1.6 !important;
   caret-color: var(--text-normal);
 }

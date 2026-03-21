@@ -19,11 +19,32 @@ interface BacklinkBlock {
 export default class EditableBacklinksPlugin extends Plugin {
   private refreshDebounced: () => void;
   private renderComponent: Component;
+  private globalKeyHandler: ((ev: KeyboardEvent) => void) | null = null;
 
   async onload() {
     this.renderComponent = new Component();
     this.renderComponent.load();
     this.refreshDebounced = debounce(() => this.refreshActiveLeaf(), 1000, true);
+
+    // Global capture-phase handler registered ONCE at plugin load
+    // Intercepts shortcuts before Obsidian when editing backlink textareas
+    this.globalKeyHandler = (ev: KeyboardEvent) => {
+      const textarea = document.activeElement;
+      if (!textarea || !(textarea instanceof HTMLTextAreaElement) || !textarea.classList.contains("eb-textarea")) return;
+
+      // Task status shortcuts
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) {
+        const commandId = this.findMatchingCommand(ev);
+        if (commandId && commandId.startsWith("task-enhancer:set-status-")) {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          const statusName = commandId.replace("task-enhancer:set-status-", "");
+          this.applyTaskStatusInTextarea(textarea, statusName);
+        }
+      }
+    };
+    document.addEventListener("keydown", this.globalKeyHandler, true);
+
 
     this.registerEvent(
       this.app.metadataCache.on("resolved", () => {
@@ -51,6 +72,9 @@ export default class EditableBacklinksPlugin extends Plugin {
   onunload() {
     this.renderComponent.unload();
     document.querySelectorAll(".editable-backlinks-section").forEach((el) => el.remove());
+    if (this.globalKeyHandler) {
+      document.removeEventListener("keydown", this.globalKeyHandler, true);
+    }
   }
 
   private refreshActiveLeaf() {
@@ -135,248 +159,141 @@ export default class EditableBacklinksPlugin extends Plugin {
   private async renderBlock(blockEl: HTMLElement, block: BacklinkBlock) {
     const renderContent = block.content.replace(/\t/g, "  ");
     const rendered = blockEl.createDiv({ cls: "eb-rendered" });
-    await MarkdownRenderer.render(
-      this.app,
-      renderContent,
-      rendered,
-      block.sourceFile.path,
-      this.renderComponent
-    );
-
+    await MarkdownRenderer.render(this.app, renderContent, rendered, block.sourceFile.path, this.renderComponent);
     this.attachLinkHandlers(rendered, block);
+    this.applyTaskStatusLabels(rendered);
 
-    // Get original plain text for diff comparison
-    const originalPlainText = rendered.textContent || "";
+    let editing = false;
 
     const startEdit = (e: MouseEvent) => {
-      if (rendered.hasAttribute("data-eb-editing")) return;
-
+      if (editing) return;
       const target = e.target as HTMLElement;
       if (target.closest("a")) return;
+      editing = true;
 
-      const originalHTML = rendered.innerHTML;
-      rendered.setAttribute("data-eb-editing", "true");
-      rendered.setAttribute("contenteditable", "true");
+      // Create textarea with raw markdown
+      const textarea = document.createElement("textarea");
+      textarea.className = "eb-textarea";
+      textarea.value = block.content;
+      textarea.spellcheck = false;
 
-      // Store link data for expand/collapse
-      const links = rendered.querySelectorAll("a.internal-link");
-      const linkMap = new Map<HTMLElement, { href: string; text: string; expanded: boolean }>();
-      links.forEach((a) => {
-        const el = a as HTMLElement;
-        const href = el.getAttribute("data-href") || el.getAttribute("href") || "";
-        const text = el.textContent || "";
-        linkMap.set(el, { href, text, expanded: false });
-      });
+      // Style to match rendered content
+      const computedStyle = getComputedStyle(rendered);
+      textarea.style.fontFamily = computedStyle.fontFamily;
+      textarea.style.fontSize = computedStyle.fontSize;
+      textarea.style.lineHeight = computedStyle.lineHeight;
+      textarea.style.color = "var(--text-normal)";
+      textarea.style.width = "100%";
+      textarea.style.border = "none";
+      textarea.style.outline = "none";
+      textarea.style.background = "transparent";
+      textarea.style.resize = "none";
+      textarea.style.overflow = "hidden";
+      textarea.style.padding = "0";
+      textarea.style.margin = "0";
+      textarea.style.whiteSpace = "pre-wrap";
+      textarea.style.wordWrap = "break-word";
+      textarea.style.tabSize = "2";
 
-      // Expand link to [[markdown]] when cursor is on/near it
-      const expandLink = (linkEl: HTMLElement) => {
-        const data = linkMap.get(linkEl);
-        if (!data || data.expanded) return;
-        data.expanded = true;
-        const md = data.text === data.href ? `[[${data.href}]]` : `[[${data.href}|${data.text}]]`;
-        linkEl.textContent = md;
-        linkEl.style.color = "var(--text-normal)";
-        linkEl.style.textDecoration = "none";
-        linkEl.style.fontWeight = "normal";
+      // Hide rendered, show textarea
+      rendered.style.display = "none";
+      blockEl.appendChild(textarea);
+
+      // Auto-resize textarea
+      const autoResize = () => {
+        textarea.style.height = "auto";
+        textarea.style.height = textarea.scrollHeight + "px";
       };
+      autoResize();
+      textarea.addEventListener("input", autoResize);
 
-      // Collapse link back to rendered
-      const collapseLink = (linkEl: HTMLElement) => {
-        const data = linkMap.get(linkEl);
-        if (!data || !data.expanded) return;
-        data.expanded = false;
-        linkEl.textContent = data.text;
-        linkEl.style.color = "";
-        linkEl.style.textDecoration = "";
-        linkEl.style.fontWeight = "";
-      };
+      // Focus and place cursor
+      textarea.focus();
 
-      // Monitor cursor position to expand/collapse links
-      const checkCursor = () => {
-        if (!rendered.hasAttribute("data-eb-editing")) return;
-        const sel = window.getSelection();
-        if (!sel || sel.rangeCount === 0) return;
-        const cursorNode = sel.focusNode;
+      // Keydown handler — use capture on document to intercept before Obsidian
+      const keyHandler = (ev: KeyboardEvent) => {
+        // Only handle if our textarea is focused
+        if (document.activeElement !== textarea) return;
 
-        linkMap.forEach((data, linkEl) => {
-          if (linkEl.contains(cursorNode) || linkEl === cursorNode) {
-            expandLink(linkEl);
+        if (ev.key === "Tab") {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          const start = textarea.selectionStart;
+          const end = textarea.selectionEnd;
+          const value = textarea.value;
+
+          if (ev.shiftKey) {
+            const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+            const line = value.substring(lineStart);
+            if (line.startsWith("\t")) {
+              textarea.value = value.substring(0, lineStart) + line.substring(1);
+              textarea.selectionStart = textarea.selectionEnd = Math.max(lineStart, start - 1);
+            } else if (line.startsWith("  ")) {
+              textarea.value = value.substring(0, lineStart) + line.substring(2);
+              textarea.selectionStart = textarea.selectionEnd = Math.max(lineStart, start - 2);
+            }
           } else {
-            collapseLink(linkEl);
+            textarea.value = value.substring(0, start) + "\t" + value.substring(end);
+            textarea.selectionStart = textarea.selectionEnd = start + 1;
           }
-        });
-      };
-
-      rendered.addEventListener("keyup", checkCursor);
-      rendered.addEventListener("click", () => setTimeout(checkCursor, 10));
-      // Initial check
-      setTimeout(checkCursor, 50);
-
-      // Place cursor exactly where clicked
-      const sel = window.getSelection();
-      if (sel && document.caretRangeFromPoint) {
-        const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-        if (range) {
-          sel.removeAllRanges();
-          sel.addRange(range);
+          autoResize();
+          return;
         }
-      }
-      setTimeout(checkCursor, 50);
 
-      let finished = false;
-      const finish = async (save: boolean) => {
-        if (finished) return;
-        finished = true;
-
-        // Collapse all links before reading text
-        linkMap.forEach((data, linkEl) => collapseLink(linkEl));
-
-        const editedPlainText = rendered.textContent || "";
-        rendered.removeAttribute("contenteditable");
-        rendered.removeAttribute("data-eb-editing");
-        rendered.removeEventListener("keyup", checkCursor);
-
-        if (save && editedPlainText !== originalPlainText) {
-          const newContent = this.applyTextDiff(block.content, originalPlainText, editedPlainText);
-          await this.saveEdit(block, newContent);
-          block.content = newContent;
-          const newRenderContent = newContent.replace(/\t/g, "  ");
-          rendered.empty();
-          await MarkdownRenderer.render(this.app, newRenderContent, rendered, block.sourceFile.path, this.renderComponent);
-          this.attachLinkHandlers(rendered, block);
-        } else {
-          rendered.innerHTML = originalHTML;
-          this.attachLinkHandlers(rendered, block);
+        if (ev.key === "Enter" && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          const start = textarea.selectionStart;
+          const value = textarea.value;
+          // Find current line to detect bullet prefix
+          const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+          const currentLine = value.substring(lineStart, start);
+          const bulletMatch = currentLine.match(/^(\s*[-*+]\s*)/);
+          const prefix = bulletMatch ? bulletMatch[1] : "";
+          const insert = "\n" + prefix;
+          textarea.value = value.substring(0, start) + insert + value.substring(start);
+          textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+          autoResize();
+          return;
         }
+
+        if (ev.key === "Escape") {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          document.removeEventListener("keydown", keyHandler, true);
+          finishEdit(false);
+          return;
+        }
+
       };
+      document.addEventListener("keydown", keyHandler, true);
 
-      rendered.addEventListener("blur", () => finish(true), { once: true });
-      rendered.addEventListener("keydown", (ev: KeyboardEvent) => {
-        if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
-      });
-    };
+      const finishEdit = async (save: boolean) => {
+        if (!editing) return;
+        editing = false;
+        document.removeEventListener("keydown", keyHandler, true);
 
-    // Click on non-link text = edit
-    rendered.addEventListener("click", (e) => startEdit(e));
+        const newContent = textarea.value;
+        textarea.remove();
+        rendered.style.display = "";
 
-    // Double click anywhere (including links) = edit
-    rendered.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // Force edit even on links
-      if (rendered.hasAttribute("data-eb-editing")) return;
-      const originalHTML = rendered.innerHTML;
-      rendered.setAttribute("data-eb-editing", "true");
-      rendered.setAttribute("contenteditable", "true");
-      const sel = window.getSelection();
-      if (sel && document.caretRangeFromPoint) {
-        const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-        if (range) { sel.removeAllRanges(); sel.addRange(range); }
-      }
-
-      let finished = false;
-      const finish = async (save: boolean) => {
-        if (finished) return;
-        finished = true;
-        const editedPlainText = rendered.textContent || "";
-        rendered.removeAttribute("contenteditable");
-        rendered.removeAttribute("data-eb-editing");
-        if (save && editedPlainText !== originalPlainText) {
-          const newContent = this.applyTextDiff(block.content, originalPlainText, editedPlainText);
+        if (save && newContent !== block.content) {
           await this.saveEdit(block, newContent);
           block.content = newContent;
           rendered.empty();
           await MarkdownRenderer.render(this.app, newContent.replace(/\t/g, "  "), rendered, block.sourceFile.path, this.renderComponent);
           this.attachLinkHandlers(rendered, block);
-        } else {
-          rendered.innerHTML = originalHTML;
-          this.attachLinkHandlers(rendered, block);
+          this.applyTaskStatusLabels(rendered);
         }
       };
-      rendered.addEventListener("blur", () => finish(true), { once: true });
-      rendered.addEventListener("keydown", (ev: KeyboardEvent) => {
-        if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
-      });
-    });
+
+      textarea.addEventListener("blur", () => finishEdit(true));
+    };
+
+    // Click to edit
+    rendered.addEventListener("click", (e) => startEdit(e));
   }
 
-  private getDirectText(el: HTMLElement): string {
-    let text = "";
-    for (const node of Array.from(el.childNodes)) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.textContent || "";
-      } else if (node instanceof HTMLElement && !node.matches("ul, ol")) {
-        text += node.textContent || "";
-      }
-    }
-    return text.trimEnd();
-  }
-
-  private applyTextDiff(originalMd: string, originalPlain: string, editedPlain: string): string {
-    if (originalPlain === editedPlain) return originalMd;
-
-    // Find common prefix
-    let prefixLen = 0;
-    while (prefixLen < originalPlain.length && prefixLen < editedPlain.length
-           && originalPlain[prefixLen] === editedPlain[prefixLen]) {
-      prefixLen++;
-    }
-
-    // Find common suffix
-    let suffixLen = 0;
-    while (suffixLen < (originalPlain.length - prefixLen)
-           && suffixLen < (editedPlain.length - prefixLen)
-           && originalPlain[originalPlain.length - 1 - suffixLen] === editedPlain[editedPlain.length - 1 - suffixLen]) {
-      suffixLen++;
-    }
-
-    // Map plain text positions to markdown positions
-    const mdPrefixPos = this.plainPosToMdPos(originalMd, originalPlain, prefixLen);
-    const mdSuffixPos = suffixLen > 0
-      ? this.plainPosToMdPos(originalMd, originalPlain, originalPlain.length - suffixLen)
-      : originalMd.length;
-
-    // The changed portion in edited text
-    const editedMiddle = editedPlain.substring(prefixLen, editedPlain.length - suffixLen);
-
-    // Reconstruct: markdown prefix + edited middle + markdown suffix
-    return originalMd.substring(0, mdPrefixPos) + editedMiddle + originalMd.substring(mdSuffixPos);
-  }
-
-  private plainPosToMdPos(md: string, plain: string, plainPos: number): number {
-    // Walk through markdown and plain text simultaneously to map position
-    let pi = 0; // plain index
-    let mi = 0; // markdown index
-
-    while (mi < md.length && pi < plainPos) {
-      // Skip markdown syntax that doesn't appear in plain text
-      if (md.substring(mi).match(/^\[\[([^\]|]+)(\|([^\]]+))?\]\]/)) {
-        const match = md.substring(mi).match(/^\[\[([^\]|]+)(\|([^\]]+))?\]\]/)!;
-        const displayText = match[3] || match[1];
-        const plainChars = displayText.length;
-        const mdChars = match[0].length;
-        if (pi + plainChars <= plainPos) {
-          pi += plainChars;
-          mi += mdChars;
-        } else {
-          // Position is inside a link — place cursor at start of link in md
-          return mi;
-        }
-      } else if (md.substring(mi, mi + 2) === "**") {
-        mi += 2; // skip **
-      } else if (md[mi] === "*" && md.substring(mi, mi + 2) !== "**") {
-        mi += 1; // skip *
-      } else if (md.substring(mi, mi + 2) === "~~") {
-        mi += 2;
-      } else if (md[mi] === "`") {
-        mi += 1;
-      } else {
-        pi++;
-        mi++;
-      }
-    }
-    return mi;
-  }
 
   private htmlToMarkdown(el: HTMLElement): string {
     let md = "";
@@ -430,6 +347,161 @@ export default class EditableBacklinksPlugin extends Plugin {
     });
     container.querySelectorAll("a.external-link").forEach((link) => {
       link.addEventListener("click", (e) => { e.stopPropagation(); });
+    });
+  }
+
+
+  private findMatchingCommand(ev: KeyboardEvent): string | null {
+    const modifiers: string[] = [];
+    if (ev.ctrlKey || ev.metaKey) modifiers.push("Ctrl");
+    if (ev.shiftKey) modifiers.push("Shift");
+    if (ev.altKey) modifiers.push("Alt");
+
+    const codeKey = ev.code.replace("Digit", "").replace("Key", "");
+
+    const hotkeyManager = (this.app as any).hotkeyManager;
+    if (!hotkeyManager) return null;
+
+    const customKeys = hotkeyManager.customKeys || {};
+    const defaultKeys = hotkeyManager.defaultKeys || {};
+    const allKeys = { ...defaultKeys, ...customKeys };
+
+    for (const [commandId, hotkeys] of Object.entries(allKeys)) {
+      if (!Array.isArray(hotkeys)) continue;
+      for (const hk of hotkeys as any[]) {
+        if (!hk || !hk.modifiers || !hk.key) continue;
+        const hkMods = [...hk.modifiers].sort();
+        const evMods = [...modifiers].sort();
+        if (hkMods.length !== evMods.length) continue;
+        if (!hkMods.every((m: string, i: number) => m === evMods[i])) continue;
+        const hkKey = hk.key.toLowerCase();
+        if (hkKey === ev.key.toLowerCase() || hkKey === codeKey.toLowerCase() || hkKey === ev.code.toLowerCase()) {
+          return commandId;
+        }
+      }
+    }
+    return null;
+  }
+
+  private applyTaskStatusInTextarea(textarea: HTMLTextAreaElement, statusName: string) {
+    const taskEnhancer = (this.app as any).plugins?.plugins?.["task-enhancer"];
+    if (!taskEnhancer?.settings?.statuses) return;
+
+    const status = taskEnhancer.settings.statuses.find(
+      (s: any) => s.name.toLowerCase().replace(/\s+/g, "-") === statusName
+    );
+    if (!status) return;
+
+    const value = textarea.value;
+    const cursorPos = textarea.selectionStart;
+
+    // Find the line the cursor is on
+    const lineStart = value.lastIndexOf("\n", cursorPos - 1) + 1;
+    const lineEnd = value.indexOf("\n", cursorPos);
+    const line = value.substring(lineStart, lineEnd === -1 ? value.length : lineEnd);
+
+    const taskMatch = line.match(/^(\s*[-*+]\s*)\[(.)\](\s.*)/);
+    if (taskMatch) {
+      const newLine = `${taskMatch[1]}[${status.symbol}]${taskMatch[3]}`;
+      const before = value.substring(0, lineStart);
+      const after = value.substring(lineEnd === -1 ? value.length : lineEnd);
+      textarea.value = before + newLine + after;
+      textarea.selectionStart = textarea.selectionEnd = cursorPos;
+    } else {
+      // Convert to task
+      const bulletMatch = line.match(/^(\s*[-*+]\s*)(.*)/);
+      if (bulletMatch) {
+        const newLine = `${bulletMatch[1]}[${status.symbol}] ${bulletMatch[2]}`;
+        const before = value.substring(0, lineStart);
+        const after = value.substring(lineEnd === -1 ? value.length : lineEnd);
+        textarea.value = before + newLine + after;
+        textarea.selectionStart = textarea.selectionEnd = cursorPos + 4; // [x] + space
+      }
+    }
+  }
+
+  private applyTaskStatusLabels(container: HTMLElement) {
+    // Apply status labels to checkboxes rendered by MarkdownRenderer
+    // This replicates what Task Enhancer does via CSS, but for our rendered blocks
+    const taskItems = container.querySelectorAll("li.task-list-item");
+    taskItems.forEach((li) => {
+      const el = li as HTMLElement;
+      const dataTask = el.getAttribute("data-task") || "";
+      const checkbox = el.querySelector("input.task-list-item-checkbox") as HTMLInputElement;
+      if (!checkbox) return;
+
+      // Determine status from data-task attribute
+      let statusName = "";
+      let statusColor = "";
+      let isDone = false;
+
+      // Read from Task Enhancer settings if available
+      const taskEnhancer = (this.app as any).plugins?.plugins?.["task-enhancer"];
+      if (taskEnhancer?.settings?.statuses) {
+        const statuses = taskEnhancer.settings.statuses;
+        for (const s of statuses) {
+          if (s.symbol === dataTask || (s.symbol === " " && dataTask === "")) {
+            statusName = s.name;
+            statusColor = s.color;
+            isDone = s.isDone;
+            break;
+          }
+        }
+      } else {
+        // Fallback defaults
+        const defaults: Record<string, { name: string; color: string; done: boolean }> = {
+          "": { name: "TODO", color: "#e03131", done: false },
+          " ": { name: "TODO", color: "#e03131", done: false },
+          "w": { name: "WAITING", color: "#e67700", done: false },
+          "?": { name: "ASK", color: "#7c3aed", done: false },
+          "x": { name: "DONE", color: "#2b8a3e", done: true },
+        };
+        const d = defaults[dataTask];
+        if (d) { statusName = d.name; statusColor = d.color; isDone = d.done; }
+      }
+
+      if (!statusName) return;
+
+      // Remove any existing status text rendered as plain text by MarkdownRenderer
+      const allStatuses = taskEnhancer?.settings?.statuses?.map((s: any) => s.name) || ["TODO", "WAITING", "ASK", "DONE"];
+      const statusRegex = new RegExp(`^\\s*(${allStatuses.join("|")})\\s*`, "i");
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+      let textNode;
+      while ((textNode = walker.nextNode())) {
+        if (textNode.textContent && statusRegex.test(textNode.textContent) && textNode.parentElement?.tagName !== "SPAN") {
+          textNode.textContent = textNode.textContent.replace(statusRegex, " ");
+        }
+      }
+
+      // Add status label after checkbox (only if not already present)
+      const existingLabel = el.querySelector(".eb-task-label");
+      if (existingLabel) existingLabel.remove();
+
+      const label = document.createElement("span");
+      label.className = "eb-task-label";
+      label.textContent = statusName;
+      label.style.color = statusColor;
+      label.style.fontWeight = "700";
+      label.style.fontSize = "0.85em";
+      label.style.marginRight = "4px";
+      checkbox.insertAdjacentElement("afterend", label);
+
+      // Style checkbox border
+      if (!isDone) {
+        checkbox.style.appearance = "none";
+        checkbox.style.webkitAppearance = "none";
+        checkbox.style.border = `2px solid ${statusColor}`;
+        checkbox.style.borderRadius = "3px";
+        checkbox.style.width = "1em";
+        checkbox.style.height = "1em";
+        checkbox.style.background = "transparent";
+        checkbox.style.cursor = "pointer";
+        checkbox.checked = false;
+      } else {
+        checkbox.style.accentColor = statusColor;
+        el.style.textDecoration = "line-through";
+        el.style.color = "#868e96";
+      }
     });
   }
 
