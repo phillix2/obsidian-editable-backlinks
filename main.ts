@@ -135,7 +135,8 @@ export default class EditableBacklinksPlugin extends Plugin {
       // Click on file name navigates to that page
       fileName.addEventListener("click", (e) => {
         e.stopPropagation();
-        this.app.workspace.openLinkText(sourceFile.path, "", false);
+        const newTab = (e as MouseEvent).ctrlKey || (e as MouseEvent).metaKey;
+        this.app.workspace.openLinkText(sourceFile.path, "", newTab);
       });
 
       const blocksEl = groupEl.createDiv({ cls: "eb-blocks" });
@@ -342,7 +343,8 @@ export default class EditableBacklinksPlugin extends Plugin {
         e.preventDefault();
         e.stopPropagation();
         const href = link.getAttribute("href") || link.getAttribute("data-href") || "";
-        if (href) this.app.workspace.openLinkText(href, block.sourceFile.path, false);
+        const newTab = (e as MouseEvent).ctrlKey || (e as MouseEvent).metaKey;
+        if (href) this.app.workspace.openLinkText(href, block.sourceFile.path, newTab);
       });
     });
     container.querySelectorAll("a.external-link").forEach((link) => {
