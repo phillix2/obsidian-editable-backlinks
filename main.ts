@@ -90,7 +90,8 @@ export default class EditableBacklinksPlugin extends Plugin {
 
     const container = view.containerEl.querySelector(".cm-sizer")
       || view.containerEl.querySelector(".markdown-preview-sizer")
-      || view.containerEl.querySelector(".cm-scroller");
+      || view.containerEl.querySelector(".cm-scroller")
+      || view.containerEl.querySelector(".markdown-preview-view");
     if (!container) return;
 
     container.querySelectorAll(".editable-backlinks-section").forEach((el) => el.remove());
@@ -158,141 +159,145 @@ export default class EditableBacklinksPlugin extends Plugin {
   }
 
   private async renderBlock(blockEl: HTMLElement, block: BacklinkBlock) {
-    const renderContent = block.content.replace(/\t/g, "  ");
     const rendered = blockEl.createDiv({ cls: "eb-rendered" });
-    await MarkdownRenderer.render(this.app, renderContent, rendered, block.sourceFile.path, this.renderComponent);
-    this.attachLinkHandlers(rendered, block);
-    this.applyTaskStatusLabels(rendered);
+    this.renderLines(rendered, block);
+  }
 
-    let editing = false;
+  // Render each line as individual div with inline editing (like client-outline)
+  private renderLines(rendered: HTMLElement, block: BacklinkBlock) {
+    rendered.empty();
+    const sourceLines = block.content.split("\n");
+    const sC: Record<string, string> = { " ": "#e03131", "w": "#e67700", "?": "#7c3aed", "x": "#2b8a3e" };
+    const sN: Record<string, string> = { " ": "TODO", "w": "WAITING", "?": "ASK", "x": "DONE" };
+    const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    const startEdit = (e: MouseEvent) => {
-      if (editing) return;
-      const target = e.target as HTMLElement;
-      if (target.closest("a")) return;
-      editing = true;
-
-      // Create textarea with raw markdown
-      const textarea = document.createElement("textarea");
-      textarea.className = "eb-textarea";
-      textarea.value = block.content;
-      textarea.spellcheck = false;
-
-      // Style to match rendered content
-      const computedStyle = getComputedStyle(rendered);
-      textarea.style.fontFamily = computedStyle.fontFamily;
-      textarea.style.fontSize = computedStyle.fontSize;
-      textarea.style.lineHeight = computedStyle.lineHeight;
-      textarea.style.color = "var(--text-normal)";
-      textarea.style.width = "100%";
-      textarea.style.border = "none";
-      textarea.style.outline = "none";
-      textarea.style.background = "transparent";
-      textarea.style.resize = "none";
-      textarea.style.overflow = "hidden";
-      textarea.style.padding = "0";
-      textarea.style.margin = "0";
-      textarea.style.whiteSpace = "pre-wrap";
-      textarea.style.wordWrap = "break-word";
-      textarea.style.tabSize = "2";
-
-      // Hide rendered, show textarea
-      rendered.style.display = "none";
-      blockEl.appendChild(textarea);
-
-      // Auto-resize textarea
-      const autoResize = () => {
-        textarea.style.height = "auto";
-        textarea.style.height = textarea.scrollHeight + "px";
-      };
-      autoResize();
-      textarea.addEventListener("input", autoResize);
-
-      // Focus and place cursor
-      textarea.focus();
-
-      // Keydown handler — use capture on document to intercept before Obsidian
-      const keyHandler = (ev: KeyboardEvent) => {
-        // Only handle if our textarea is focused
-        if (document.activeElement !== textarea) return;
-
-        if (ev.key === "Tab") {
-          ev.preventDefault();
-          ev.stopImmediatePropagation();
-          const start = textarea.selectionStart;
-          const end = textarea.selectionEnd;
-          const value = textarea.value;
-
-          if (ev.shiftKey) {
-            const lineStart = value.lastIndexOf("\n", start - 1) + 1;
-            const line = value.substring(lineStart);
-            if (line.startsWith("\t")) {
-              textarea.value = value.substring(0, lineStart) + line.substring(1);
-              textarea.selectionStart = textarea.selectionEnd = Math.max(lineStart, start - 1);
-            } else if (line.startsWith("  ")) {
-              textarea.value = value.substring(0, lineStart) + line.substring(2);
-              textarea.selectionStart = textarea.selectionEnd = Math.max(lineStart, start - 2);
-            }
-          } else {
-            textarea.value = value.substring(0, start) + "\t" + value.substring(end);
-            textarea.selectionStart = textarea.selectionEnd = start + 1;
-          }
-          autoResize();
-          return;
-        }
-
-        if (ev.key === "Enter" && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
-          ev.preventDefault();
-          ev.stopImmediatePropagation();
-          const start = textarea.selectionStart;
-          const value = textarea.value;
-          // Find current line to detect bullet prefix
-          const lineStart = value.lastIndexOf("\n", start - 1) + 1;
-          const currentLine = value.substring(lineStart, start);
-          const bulletMatch = currentLine.match(/^(\s*[-*+]\s*)/);
-          const prefix = bulletMatch ? bulletMatch[1] : "";
-          const insert = "\n" + prefix;
-          textarea.value = value.substring(0, start) + insert + value.substring(start);
-          textarea.selectionStart = textarea.selectionEnd = start + insert.length;
-          autoResize();
-          return;
-        }
-
-        if (ev.key === "Escape") {
-          ev.preventDefault();
-          ev.stopImmediatePropagation();
-          document.removeEventListener("keydown", keyHandler, true);
-          finishEdit(false);
-          return;
-        }
-
-      };
-      document.addEventListener("keydown", keyHandler, true);
-
-      const finishEdit = async (save: boolean) => {
-        if (!editing) return;
-        editing = false;
-        document.removeEventListener("keydown", keyHandler, true);
-
-        const newContent = textarea.value;
-        textarea.remove();
-        rendered.style.display = "";
-
-        if (save && newContent !== block.content) {
-          await this.saveEdit(block, newContent);
-          block.content = newContent;
-          rendered.empty();
-          await MarkdownRenderer.render(this.app, newContent.replace(/\t/g, "  "), rendered, block.sourceFile.path, this.renderComponent);
-          this.attachLinkHandlers(rendered, block);
-          this.applyTaskStatusLabels(rendered);
-        }
-      };
-
-      textarea.addEventListener("blur", () => finishEdit(true));
+    // Render wikilinks as clickable links
+    const renderWikilinks = (text: string) => {
+      return esc(text).replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, path, display) => {
+        const name = display || path;
+        return `<a class="internal-link" data-href="${path}" href="${path}">${esc(name)}</a>`;
+      });
     };
 
-    // Click to edit
-    rendered.addEventListener("click", (e) => startEdit(e));
+    for (let i = 0; i < sourceLines.length; i++) {
+      const line = sourceLines[i];
+      const trimmed = line.trim();
+
+      // Skip metadata lines
+      if (trimmed.startsWith("pm::") || trimmed.startsWith("- pm::") ||
+          trimmed.match(/^(?:-\s*)?ref::\s/) || trimmed.match(/^(?:-\s*)?notas::\s/)) continue;
+      if (!trimmed) continue;
+
+      // Parse line
+      const indent = (line.match(/^(\t*)/)?.[1] || "").length + (line.match(/^( *)/)?.[1] || "").length / 2;
+      const taskMatch = trimmed.match(/^[-*+]\s+\[([^\]]+)\]\s+(.*)/);
+      const bulletMatch = !taskMatch ? trimmed.match(/^[-*+]\s+(.*)/) : null;
+      const textContent = taskMatch ? taskMatch[2] : (bulletMatch ? bulletMatch[1] : trimmed);
+      const status = taskMatch ? taskMatch[1] : null;
+
+      const row = rendered.createDiv();
+      row.style.cssText = `margin:1px 0;padding-left:${indent * 16}px;`;
+
+      if (status !== null) {
+        // Task with checkbox and status badge
+        const isDone = status === "x" || status === "X";
+        const c = sC[status] || "#888";
+        const n = sN[status] || status.toUpperCase();
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = isDone;
+        cb.style.cssText = `margin-right:5px;vertical-align:middle;cursor:pointer;accent-color:${c};`;
+        row.appendChild(cb);
+
+        if (!isDone) {
+          const badge = document.createElement("span");
+          badge.innerHTML = `<span style="color:${c};font-weight:700;margin-right:4px">${n}</span>`;
+          row.appendChild(badge);
+        }
+
+        const nameSpan = document.createElement("span");
+        nameSpan.innerHTML = renderWikilinks(textContent);
+        if (isDone) { nameSpan.style.textDecoration = "line-through"; nameSpan.style.opacity = "0.5"; }
+        nameSpan.style.cssText += "cursor:text;display:inline;";
+        row.appendChild(nameSpan);
+
+        this.makeSpanEditable(nameSpan, sourceLines, i, block, rendered);
+        this.attachLinkHandlers(nameSpan, block);
+      } else {
+        // Plain bullet or text
+        const textSpan = document.createElement("span");
+        if (bulletMatch) {
+          textSpan.innerHTML = "• " + renderWikilinks(textContent);
+        } else {
+          textSpan.innerHTML = renderWikilinks(textContent);
+        }
+        textSpan.style.cursor = "text";
+        row.appendChild(textSpan);
+
+        this.makeSpanEditable(textSpan, sourceLines, i, block, rendered);
+        this.attachLinkHandlers(textSpan, block);
+      }
+    }
+  }
+
+  // Make a span editable on click with contenteditable, cursor at click position
+  private makeSpanEditable(span: HTMLElement, sourceLines: string[], lineIdx: number, block: BacklinkBlock, rendered: HTMLElement) {
+    span.addEventListener("click", (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest("a")) return;
+      if (span.isContentEditable) return;
+      e.stopPropagation();
+
+      const origLine = sourceLines[lineIdx];
+      const prefixMatch = origLine.match(/^(\s*[-*+]\s*(?:\[.\]\s*)?)/);
+      const prefix = prefixMatch ? prefixMatch[1] : "";
+      const textPart = origLine.substring(prefix.length);
+
+      const x = e.clientX, y = e.clientY;
+      span.textContent = textPart;
+      span.setAttribute("contenteditable", "plaintext-only");
+      span.style.outline = "none";
+      span.style.display = "inline-block";
+      span.style.minWidth = "60%";
+      span.style.paddingRight = "30px";
+      span.focus();
+
+      // Place cursor at click position
+      try {
+        let range: Range | null = null;
+        if ((document as any).caretPositionFromPoint) {
+          const pos = (document as any).caretPositionFromPoint(x, y);
+          if (pos) { range = document.createRange(); range.setStart(pos.offsetNode, pos.offset); range.collapse(true); }
+        } else if (document.caretRangeFromPoint) {
+          range = document.caretRangeFromPoint(x, y);
+        }
+        if (range) { const sel = window.getSelection(); if (sel) { sel.removeAllRanges(); sel.addRange(range); } }
+      } catch (_) {}
+
+      const finish = async (save: boolean) => {
+        if (!span.isContentEditable) return;
+        span.removeAttribute("contenteditable");
+        span.style.display = "";
+        span.style.paddingRight = "";
+        span.style.minWidth = "";
+        const newText = span.textContent?.trim() || "";
+
+        if (save && newText !== textPart.trim()) {
+          sourceLines[lineIdx] = prefix + newText;
+          block.content = sourceLines.join("\n");
+          await this.saveEdit(block, block.content);
+        }
+        // Re-render all lines
+        this.renderLines(rendered, block);
+      };
+
+      span.addEventListener("blur", () => finish(true), { once: true });
+      span.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); span.blur(); }
+        if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+      });
+    });
   }
 
 
